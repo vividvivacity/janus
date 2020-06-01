@@ -1,73 +1,148 @@
 import os
-import time
-import re
-from slackclient import SlackClient
+import logging
+from flask import Flask
+from slack import WebClient
+from slackeventsapi import SlackEventAdapter
+from onboarding_tutorial import OnboardingTutorial 
+import ssl as ssl_lib
+import certifi
 
-#Instantiate Slack client
-slack_client = SlackClient(os.environ.get('JANUS_TOKEN'))
+ssl_context = ssl_lib.create_default_context(cafile=certifi.where())
 
-#Bot's id is assigned after bot starts up
-janus_id = None
+# Initialize a Flask app to host the events adapter
+app = Flask(__name__)
+slack_events_adapter = SlackEventAdapter(os.environ['JANUS_SIGNING_SECRET'], "/slack/events", app)
 
-#Constants
-RTM_READ_DELAY = 1 #1 second delay between reading from RTM
-EXAMPLE_COMMAND = "do"
-MENTION_REGEX = "^<@(|[WU].+?)>(.*)"
+# Initialize a Web API client
+slack_web_client = WebClient(token=os.environ['JANUS_TOKEN'])
 
-def parse_bot_commands(slack_events):
-    '''
-        Parses a list of events coming from the Slack RTM API to find bot commands.
-        If a bot command is found, this function returns a tuple of command and channel.
-        If its not found, then this function returns None, None.
-    '''
-    for event in slack_events:
-        if event["type"] == "message" and not "subtype" in event:
-            user_id, message = parse_direct_mention(event["text"])
-            if user_id == janus_id:
-                return message, event["channel"]
-    return None, None
+# For simplicity we'll store our app data in-memory with the following data structure.
+# onboarding_tutorials_sent = {"channel": {"user_id": OnboardingTutorial}}
+onboarding_tutorials_sent = {}
 
-def parse_direct_mention(message_text):
-    '''
-        Finds a direct mention (a mention that is at the beginning) in message text
-        and returns the user ID which was mentioned. If there is no direct mention, returns None
-    '''
-    matches = re.search(MENTION_REGEX, message_text)
+def start_onboarding(user_id: str, channel: str):
+    # Create a new onboarding tutorial.
+    onboarding_tutorial = OnboardingTutorial(channel)
 
-    #The first group contains the username, the second group contains the remaining message
-    return (matches.group(1), matches.group(2).strip()) if matches else (None, None)
+    # Get the onboarding message payload
+    message = onboarding_tutorial.get_message_payload()
 
-def handle_command(command, channel):
-    '''
-        Executes bot command if command is known
-    '''
-    #Default response is help text for the user
-    default_response = "Not sure what you mean. Try *{}*.".format(EXAMPLE_COMMAND)
+    # Post the onboarding message in Slack
+    response = slack_web_client.chat_postMessage(**message)
 
-    #Finds and executes the given command, filling in response
-    response = None
+    # Capture the timestamp of the message we've just posted so
+    # we can use it to update the message after a user
+    # has completed an onboarding task.
+    onboarding_tutorial.timestamp = response["ts"]
 
-    #This is where you start to implement more commands!
-    if command.startswith(EXAMPLE_COMMAND):
-        response = "Sure...write some more code then I can do that!"
+    # Store the message sent in onboarding_tutorials_sent
+    if channel not in onboarding_tutorials_sent:
+        onboarding_tutorials_sent[channel] = {}
+    onboarding_tutorials_sent[channel][user_id] = onboarding_tutorial
 
-    #Sends the response back to the channel
-    slack_client.api_call(
-        "chat.postMessage",
-        channel=channel,
-        text=response or default_response
-    )
+# ================ Team Join Event =============== #
+# When the user first joins a team, the type of the event will be 'team_join'.
+# Here we'll link the onboarding_message callback to the 'team_join' event.
+@slack_events_adapter.on("team_join")
+def onboarding_message(payload):
+    """Create and send an onboarding welcome message to new users. Save the
+    time stamp of this message so we can update this message in the future.
+    """
+    event = payload.get("event", {})
 
-if __name__ == '__main__':
-    if slack_client.rtm_connect(with_team_state=False):
-        print("Janus is now on watch.")
+    # Get the id of the Slack user associated with the incoming event
+    user_id = event.get("user", {}).get("id")
 
-        #Read bot's user ID by calling Web API method `auth.test`
-        janus_id = slack_client.api_call("auth.test")["user_id"]
-        while True:
-            command, channel = parse_bot_commands(slack_client.rtm_read())
-            if command:
-                handle_command(command, channel)
-            time.sleep(RTM_READ_DELAY)
-    else:
-        print("Connection failed, exeception traceback printed above.")
+    # Open a DM with the new user.
+    response = slack_web_client.im_open(user_id)
+    channel = response["channel"]["id"]
+
+    # Post the onboarding message.
+    start_onboarding(user_id, channel)
+
+
+# ============= Reaction Added Events ============= #
+# When a users adds an emoji reaction to the onboarding message,
+# the type of the event will be 'reaction_added'.
+# Here we'll link the update_emoji callback to the 'reaction_added' event.
+@slack_events_adapter.on("reaction_added")
+def update_emoji(payload):
+    """Update the onboarding welcome message after receiving a "reaction_added"
+    event from Slack. Update timestamp for welcome message as well.
+    """
+    event = payload.get("event", {})
+
+    channel_id = event.get("item", {}).get("channel")
+    user_id = event.get("user")
+
+    if channel_id not in onboarding_tutorials_sent:
+        return
+
+    # Get the original tutorial sent.
+    onboarding_tutorial = onboarding_tutorials_sent[channel_id][user_id]
+
+    # Mark the reaction task as completed.
+    onboarding_tutorial.reaction_task_completed = True
+
+    # Get the new message payload
+    message = onboarding_tutorial.get_message_payload()
+
+    # Post the updated message in Slack
+    updated_message = slack_web_client.chat_update(**message)
+
+    # Update the timestamp saved on the onboarding tutorial object
+    onboarding_tutorial.timestamp = updated_message["ts"]
+
+
+# =============== Pin Added Events ================ #
+# When a users pins a message the type of the event will be 'pin_added'.
+# Here we'll link the update_pin callback to the 'reaction_added' event.
+@slack_events_adapter.on("pin_added")
+def update_pin(payload):
+    """Update the onboarding welcome message after receiving a "pin_added"
+    event from Slack. Update timestamp for welcome message as well.
+    """
+    event = payload.get("event", {})
+
+    channel_id = event.get("channel_id")
+    user_id = event.get("user")
+
+    # Get the original tutorial sent.
+    onboarding_tutorial = onboarding_tutorials_sent[channel_id][user_id]
+
+    # Mark the pin task as completed.
+    onboarding_tutorial.pin_task_completed = True
+
+    # Get the new message payload
+    message = onboarding_tutorial.get_message_payload()
+
+    # Post the updated message in Slack
+    updated_message = slack_web_client.chat_update(**message)
+
+    # Update the timestamp saved on the onboarding tutorial object
+    onboarding_tutorial.timestamp = updated_message["ts"]
+
+
+# ============== Message Events ============= #
+# When a user sends a DM, the event type will be 'message'.
+# Here we'll link the message callback to the 'message' event.
+@slack_events_adapter.on("message")
+def message(payload):
+    """Display the onboarding welcome message after receiving a message
+    that contains "start".
+    """
+    event = payload.get("event", {})
+
+    channel_id = event.get("channel")
+    user_id = event.get("user")
+    text = event.get("text")
+
+
+    if text and text.lower() == "start":
+        return start_onboarding(user_id, channel_id)
+
+if __name__ == "__main__":
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(logging.StreamHandler())
+    app.run(port=3000)
