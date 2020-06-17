@@ -140,6 +140,8 @@ def message(payload):
 
     if text and text.lower() == "start":
         return start_onboarding(user_id, channel_id)
+    elif text[len(text) - 1] == "?":
+        response = slack_web_client.chat_postMessage(channel=channel_id, text="Wow, that sure is a question!")
 
 if __name__ == "__main__":
     logger = logging.getLogger()
