@@ -156,6 +156,12 @@ def detect_question(event):
         search_results = slack_web_client.search_messages(token=os.environ['OAUTH_TOKEN'], query=question)
         # Need to parse matching results here
         matches = search_results['messages']['matches']
+        if len(matches) != 0:
+            match = matches[0]['text']
+            match_link = matches[0]['permalink']
+            match_msg = "Hi @%s, a similar question was found for \"%s\":\n>\"%s\"\nThis question can be found here: %s"\
+                % (user_id, question, match, match_link)
+            response = slack_web_client.chat_postMessage(channel=channel_id, text=match_msg, link_names=True)
 
 if __name__ == "__main__":
     logger = logging.getLogger()
