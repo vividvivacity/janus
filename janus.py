@@ -150,7 +150,7 @@ def detect_question(event):
     channel_id = event.get("channel")
     user_id = event.get("user")
 
-    if text[len(text) - 1] == "?":
+    if text is not None and text[len(text) - 1] == "?":
         #response = slack_web_client.chat_postMessage(channel=channel_id, text="Wow, that sure is a question!")
         question = text
         search_results = slack_web_client.search_messages(token=os.environ['OAUTH_TOKEN'], query=question)
@@ -159,9 +159,17 @@ def detect_question(event):
         if len(matches) != 0:
             match = matches[0]['text']
             match_link = matches[0]['permalink']
-            match_msg = "Hi @%s, a similar question was found for \"%s\":\n>\"%s\"\nThis question can be found here: %s"\
-                % (user_id, question, match, match_link)
+            match_msg = "Hi <@%s>, a similar question was found for your question \"%s\":\nThis question can be found here: %s"\
+                % (user_id, question, match_link)
             response = slack_web_client.chat_postMessage(channel=channel_id, text=match_msg, link_names=True)
+
+def filter_results(matches):
+    #TO-DO
+    '''Filters matches for questions by the following:
+        * The result is from a real, non-app user.
+        * The result is a properly-formatted question.
+        * The result has replies. '''
+    pass
 
 if __name__ == "__main__":
     logger = logging.getLogger()
