@@ -138,7 +138,7 @@ def message(payload):
     text = event.get("text")
 
 
-    if text and text.lower() == "start":
+    if text and text.lower() == "janus about":
         return start_onboarding(user_id, channel_id)
     else:
         detect_question(event)
@@ -157,19 +157,25 @@ def detect_question(event):
         # Need to parse matching results here
         matches = search_results['messages']['matches']
         if len(matches) != 0:
-            match = matches[0]['text']
-            match_link = matches[0]['permalink']
-            match_msg = "Hi <@%s>, a similar question was found for your question \"%s\":\nThis question can be found here: %s"\
-                % (user_id, question, match_link)
-            response = slack_web_client.chat_postMessage(channel=channel_id, text=match_msg, link_names=True)
+            filtered_matches = filter_results(matches)
+            if len(filtered_matches) != 0:
+                match_link = filtered_matches[0]['permalink']
+                match_msg = "Hi <@%s>, a similar question was found for your question \"%s\":\nThis question can be found here: %s"\
+                    % (user_id, question, match_link)
+                response = slack_web_client.chat_postMessage(channel=channel_id, text=match_msg, link_names=True)
 
 def filter_results(matches):
     #TO-DO
     '''Filters matches for questions by the following:
-        * The result is from a real, non-app user.
-        * The result is a properly-formatted question.
-        * The result has replies. '''
-    pass
+        * The result is from a real, non-app user (in this case, not from Janus).
+        * The result is a properly-formatted question.'''
+    filtered_matches = []
+    for match in matches:
+        text = match['text']
+        if text is not None and text[len(text) - 1] == "?":
+            if match['username'].lower() != "janus":
+                filtered_matches.append(match)
+    return filtered_matches
 
 if __name__ == "__main__":
     logger = logging.getLogger()
