@@ -154,7 +154,7 @@ def detect_question(event):
         #response = slack_web_client.chat_postMessage(channel=channel_id, text="Wow, that sure is a question!")
         question = text
         search_results = slack_web_client.search_messages(token=os.environ['OAUTH_TOKEN'], query=question)
-        # Need to parse matching results here
+        # Parse matching results here
         matches = search_results['messages']['matches']
         if len(matches) != 0:
             filtered_matches = filter_results(matches)
@@ -165,7 +165,6 @@ def detect_question(event):
                 response = slack_web_client.chat_postMessage(channel=channel_id, text=match_msg, link_names=True)
 
 def filter_results(matches):
-    #TO-DO
     '''Filters matches for questions by the following:
         * The result is from a real, non-app user (in this case, not from Janus).
         * The result is a properly-formatted question.'''
@@ -176,6 +175,14 @@ def filter_results(matches):
             if match['username'].lower() != "janus":
                 filtered_matches.append(match)
     return filtered_matches
+
+def check_replies(result):
+    #TO-DO
+    ''' Checks if the given result has replies.'''
+    convo_id = result['channel']['id']
+    ts = result['ts']
+    thread = slack_web_client.conversations_replies(token=os.environ['OAUTH_TOKEN'], channel=convo_id, ts=ts)
+    reply_count = thread['messages'][0]['reply_count']
 
 if __name__ == "__main__":
     logger = logging.getLogger()
