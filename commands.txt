@@ -1,4 +1,4 @@
 Commands for Janus:
-* *janus help* - lists all commands for Janus.
-* *janus about* - information about Janus' mission, updates in development, and some fun facts.
-* *more coming soon...*
+• *janus help* - lists all commands for Janus.
+• *janus about* - information about Janus' mission, updates in development, and some fun facts.
+• *more coming soon...*
