@@ -16,7 +16,7 @@ slack_events_adapter = SlackEventAdapter(os.environ['JANUS_SIGNING_SECRET'], "/s
 # Initialize a Web API client
 slack_web_client = WebClient(token=os.environ['JANUS_TOKEN'])
 
-# For simplicity we'll store our app data in-memory with the following data structure.
+# For simplicity we'll store our app data in-memory with a dictionary.
 # onboarding_tutorials_sent = {"channel": {"user_id": OnboardingTutorial}}
 onboarding_tutorials_sent = {}
 
@@ -30,9 +30,7 @@ def start_onboarding(user_id: str, channel: str):
     # Post the onboarding message in Slack
     response = slack_web_client.chat_postMessage(**message)
 
-    # Capture the timestamp of the message we've just posted so
-    # we can use it to update the message after a user
-    # has completed an onboarding task.
+    # Update the timestamp
     onboarding_tutorial.timestamp = response["ts"]
 
     # Store the message sent in onboarding_tutorials_sent
@@ -41,13 +39,13 @@ def start_onboarding(user_id: str, channel: str):
     onboarding_tutorials_sent[channel][user_id] = onboarding_tutorial
 
 # ================ Team Join Event =============== #
-# When the user first joins a team, the type of the event will be 'team_join'.
-# Here we'll link the onboarding_message callback to the 'team_join' event.
+# When a user first joins a team, they'll be welcomed with an onboarding message.
+# This is the same message sent when the user types the command "janus about".
 @slack_events_adapter.on("team_join")
 def onboarding_message(payload):
-    """Create and send an onboarding welcome message to new users. Save the
+    '''Create and send an onboarding welcome message to new users. Save the
     time stamp of this message so we can update this message in the future.
-    """
+    '''
     event = payload.get("event", {})
 
     # Get the id of the Slack user associated with the incoming event
@@ -61,94 +59,39 @@ def onboarding_message(payload):
     start_onboarding(user_id, channel)
 
 
-# ============= Reaction Added Events ============= #
-# When a users adds an emoji reaction to the onboarding message,
-# the type of the event will be 'reaction_added'.
-# Here we'll link the update_emoji callback to the 'reaction_added' event.
-@slack_events_adapter.on("reaction_added")
-def update_emoji(payload):
-    """Update the onboarding welcome message after receiving a "reaction_added"
-    event from Slack. Update timestamp for welcome message as well.
-    """
-    event = payload.get("event", {})
-
-    channel_id = event.get("item", {}).get("channel")
-    user_id = event.get("user")
-
-    if channel_id not in onboarding_tutorials_sent:
-        return
-
-    # Get the original tutorial sent.
-    onboarding_tutorial = onboarding_tutorials_sent[channel_id][user_id]
-
-    # Mark the reaction task as completed.
-    onboarding_tutorial.reaction_task_completed = True
-
-    # Get the new message payload
-    message = onboarding_tutorial.get_message_payload()
-
-    # Post the updated message in Slack
-    updated_message = slack_web_client.chat_update(**message)
-
-    # Update the timestamp saved on the onboarding tutorial object
-    onboarding_tutorial.timestamp = updated_message["ts"]
-
-
-# =============== Pin Added Events ================ #
-# When a users pins a message the type of the event will be 'pin_added'.
-# Here we'll link the update_pin callback to the 'reaction_added' event.
-@slack_events_adapter.on("pin_added")
-def update_pin(payload):
-    """Update the onboarding welcome message after receiving a "pin_added"
-    event from Slack. Update timestamp for welcome message as well.
-    """
-    event = payload.get("event", {})
-
-    channel_id = event.get("channel_id")
-    user_id = event.get("user")
-
-    # Get the original tutorial sent.
-    onboarding_tutorial = onboarding_tutorials_sent[channel_id][user_id]
-
-    # Mark the pin task as completed.
-    onboarding_tutorial.pin_task_completed = True
-
-    # Get the new message payload
-    message = onboarding_tutorial.get_message_payload()
-
-    # Post the updated message in Slack
-    updated_message = slack_web_client.chat_update(**message)
-
-    # Update the timestamp saved on the onboarding tutorial object
-    onboarding_tutorial.timestamp = updated_message["ts"]
-
-
 # ============== Message Events ============= #
-# When a user sends a DM, the event type will be 'message'.
-# Here we'll link the message callback to the 'message' event.
+# This is where Janus will listen for messages. If the message is a command
+# for Janus, Janus will execute that command. Otherwise, Janus determines if
+# the user has posted a question and then search the workspace for it.
 @slack_events_adapter.on("message")
 def message(payload):
-    """Display the onboarding welcome message after receiving a message
+    '''Display the onboarding welcome message after receiving a message
     that contains "start".
-    """
+    '''
     event = payload.get("event", {})
 
     channel_id = event.get("channel")
     user_id = event.get("user")
     text = event.get("text")
 
-
+    # command for "janus about"
     if text and text.lower() == "janus about":
         return start_onboarding(user_id, channel_id)
+
+    # command for "janus help"
     elif text and text.lower() == "janus help":
         commands = get_commands()
         response = slack_web_client.chat_postMessage(channel=channel_id, text=commands)
+
+    # determine if a question was posted
     else:
         detect_question(event)
 
 def get_commands():
     '''Opens a file containing commands for Janus and returns
-    its contents.'''
+    its contents.
+    '''
+    
     f = open("commands.txt", "r")
     text = ""
     for line in f:
@@ -157,16 +100,19 @@ def get_commands():
 
 def detect_question(event):
     '''Detect if a user has asked a question and determines if it has
-       been asked before.'''
+       been asked before.
+       '''
+    
     text = event.get("text")
     channel_id = event.get("channel")
     user_id = event.get("user")
 
+    # For now, a statement is a question if it ends with a question mark
     if text is not None and text[len(text) - 1] == "?":
-        #response = slack_web_client.chat_postMessage(channel=channel_id, text="Wow, that sure is a question!")
         question = text
         search_results = slack_web_client.search_messages(token=os.environ['OAUTH_TOKEN'], query=question)
-        # Parse matching results here
+
+        # Parse matching results
         matches = search_results['messages']['matches']
         if len(matches) != 0:
             filtered_matches = filter_results(matches)
@@ -180,7 +126,10 @@ def detect_question(event):
 def filter_results(matches):
     '''Filters matches for questions by the following:
         * The result is from a real, non-app user (in this case, not from Janus).
-        * The result is a properly-formatted question.'''
+        * The result is in a public channel (no private channels or direct messages).
+        * The result is a properly-formatted question.
+    '''
+    
     filtered_matches = []
     for match in matches:
         text = match['text']
@@ -191,14 +140,18 @@ def filter_results(matches):
 
 def check_replies(result):
     ''' Checks if the given result has replies. Returns a string based on
-    if the result has replies or not.'''
+    if the result has replies or not.
+    '''
+    
     convo_id = result['channel']['id']
     ts = result['ts']
     thread = slack_web_client.conversations_replies(token=os.environ['OAUTH_TOKEN'], channel=convo_id, ts=ts)
+
     # Check if the "reply_count" key exists in the response
     try:
         reply_count = thread["messages"][0]["reply_count"]
         return "\nThis question has %s replies so far, which may provide further insight for your question." % reply_count
+    
     # If it doesn't, there are no replies
     except:
         return "\nThis question has no replies so far, so you may choose to follow it for further replies."
